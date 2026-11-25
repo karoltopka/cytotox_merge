@@ -1,0 +1,8 @@
+# Python 3.10+;
+numpy==2.2.6          # numerics: pipeline, reading values from figures, Figure 3 and Table 1 notebooks
+pandas==2.3.3         # tables: pipeline, reading values from figures, notebooks
+openpyxl==3.1.5       # Excel files (raw sources, dataset)
+matplotlib==3.10.9    # Figure 3 and the validation plot of the figure reading
+Pillow==9.0.1         # raster figure images for reading values
+ipykernel==7.3.0      # Jupyter kernel for running the notebooks
+# other tools: Poppler 22.02.0 (pdftocairo, pdfimages - figures for reading values)
