@@ -1,0 +1,3 @@
+"model","records","publications","nanomaterials","cell_lines","residual_sd","r2_marginal","r2_conditional","singular"
+"species",2632,96,27,71,16.5374819266539,0.248050715513637,0.853487565632348,0
+"tumour status",2632,96,27,71,16.5430835292641,0.245906080738949,0.854491385089735,0

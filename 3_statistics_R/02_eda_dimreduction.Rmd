@@ -1,0 +1,221 @@
+---
+title: "2. Exploratory data analysis and dimensionality reduction"
+output: html_document
+---
+
+PCA and t-SNE of five numerical variables (dry diameter, zeta potential in water, mass concentration, exposure time, viability) on the
+complete cases, without imputation (Figure 2), on the unique five-variable profiles (Figure S1), and the t-SNE sensitivity to perplexity
+and seed (Figure S2). 
+
+- PCA (`prcomp`) on centred and scaled variables; the biplot arrows are the correlations of the variables with the components x 4. The
+  sign of each component is fixed (time positive on PC1, concentration positive on PC2) so the figures do not flip between runs.
+- t-SNE (`Rtsne`) on the same centred and scaled matrix: perplexity 100, 2000 iterations, theta 0.5, learning rate 200, early
+  exaggeration 12, seed 123, no internal PCA, no duplicate check. The KL-divergence history of every sensitivity run is checked for a
+  plateau before 2000 iterations.
+
+```{r setup-module, include=FALSE}
+source("R/setup.R", local = knitr::knit_global())
+```
+
+## 2. EXPLORATORY DATA ANALYSIS
+
+```{r}
+cat("Species:", paste(sort(unique(final_data$Animal_mapped_combined)), collapse = ", "), "\n\n")
+cat("Organs:", paste(sort(unique(final_data$Cell_organ)), collapse = ", "), "\n\n")
+cat("Cell lines (", n_distinct(final_data$Cell_Type), "):", paste(sort(unique(final_data$Cell_Type)), collapse = ", "), "\n\n")
+cat("Tests:", paste(sort(unique(final_data$Test)), collapse = ", "), "\n")
+```
+
+```{r}
+organ_percentage <- final_data %>% count(Cell_organ, sort = TRUE) %>% mutate(percent = n / sum(n) * 100)
+print(organ_percentage, n = Inf)
+cell_line_percentage <- final_data %>% count(Cell_Type, sort = TRUE) %>% mutate(percent = n / sum(n) * 100)
+print(cell_line_percentage, n = Inf)
+```
+
+## 3. DIMENSIONALITY REDUCTION
+
+### 3.1 PCA
+
+```{r}
+pca_vars <- c("Zeta_in_Water (mV)", "Concentration (g/l)2", "Cell_Viability (%)", DIAM, "Time (hr)")
+var_display <- setNames(c("ζ potential", "Concentration", "Cell Viability", "Diameter", "Time"), pca_vars)
+
+num_all <- final_data %>% select(all_of(pca_vars)) %>% mutate(across(everything(), as.numeric))
+pca_keep_idx <- which(stats::complete.cases(num_all))      # complete cases, no imputation
+pca_raw  <- num_all[pca_keep_idx, ]                         # raw values
+LOG_VARS <- c(DIAM, "Concentration (g/l)2")
+pca_data <- pca_raw
+pca_data[LOG_VARS] <- lapply(pca_data[LOG_VARS], log10)   # log10 of the right-skewed variables (see the note above)
+var_display[LOG_VARS] <- paste0("log10 ", var_display[LOG_VARS])
+
+run_pca <- function(x) {
+  p <- prcomp(x, center = TRUE, scale. = TRUE)
+  # the sign of a component is arbitrary: time positive on PC1, concentration positive on PC2 (orientation of the published biplot)
+  s <- c(sign(p$rotation["Time (hr)", 1]), sign(p$rotation["Concentration (g/l)2", 2]))
+  for (k in 1:2) { p$rotation[, k] <- p$rotation[, k] * s[k]; p$x[, k] <- p$x[, k] * s[k] }
+  p$corr <- sweep(p$rotation, 2, p$sdev, "*")   # correlation of each variable with each component
+  p
+}
+pca_result <- run_pca(pca_data)
+summary(pca_result)
+cat("\nEigenvector coefficients (rotation):\n"); print(round(pca_result$rotation[, 1:2], 3))
+cat("\nCorrelations of the variables with PC1/PC2 (drawn as arrows x 4):\n")
+print(round(pca_result$corr[, 1:2], 3))
+
+dup <- duplicated(pca_data)
+ds  <- final_data$Dataset[pca_keep_idx]
+mo  <- grepl("O", final_data$Material[pca_keep_idx])      # metal (and metalloid) oxides: formula contains O
+key("pca_n", nrow(pca_data)); key("pca_unique", sum(!dup)); key("pca_repeats", sum(dup))
+key("pca_var1", 100 * summary(pca_result)$importance[2, 1]); key("pca_var2", 100 * summary(pca_result)$importance[2, 2])
+for (v in names(var_display)) {
+  nm <- c("Zeta_in_Water (mV)" = "zeta", "Concentration (g/l)2" = "conc", "Cell_Viability (%)" = "viab", "Time (hr)" = "time")[v]
+  if (is.na(nm)) nm <- "diam"
+  key(paste0("corr_", nm, "_PC1"), pca_result$corr[v, 1]); key(paste0("corr_", nm, "_PC2"), pca_result$corr[v, 2])
+  key(paste0("load_", nm, "_PC1"), pca_result$rotation[v, 1])
+}
+key("pca_np_share", 100 * mean(ds == "Nanopharos")); key("pca_mo_share", 100 * mean(mo))
+key("pca_np_share_mo", 100 * mean(ds[mo] == "Nanopharos"))
+key("pca_r_conc_diam", cor(pca_data[["Concentration (g/l)2"]], pca_data[[DIAM]]))        # on the log10 scale, as in the PCA
+# metal oxides of Gul and Labouta in the PCA set: share coated and median zeta potential (Results, PCA paragraph)
+coat_pca <- final_data$Coat[pca_keep_idx]
+for (g in c("Gul. Et al..", "Labouta Et. Al.")) {
+  sel <- mo & ds == g
+  key(paste0("pca_coated_mo_", g), 100 * mean(coat_pca[sel] != "Uncoated"))
+  key(paste0("pca_zeta_mo_", g), median(pca_data[["Zeta_in_Water (mV)"]][sel]))
+  key(paste0("pca_diam_median_", g), median(pca_raw[[DIAM]][ds == g]))    # median dry diameter
+}
+key("mo_share_full", 100 * mean(grepl("O", final_data$Material))); key("np_share_full", 100 * mean(final_data$Dataset == "Nanopharos"))
+save_key_numbers()
+```
+
+### 3.2 t-SNE
+
+```{r}
+tsne_run <- function(x, perplexity = 100, seed = 123, check_duplicates = FALSE) {
+  set.seed(seed)
+  t <- Rtsne(x, dims = 2, perplexity = perplexity, max_iter = 2000, theta = 0.5, eta = 200, exaggeration_factor = 12,
+             pca = FALSE, check_duplicates = check_duplicates)
+  if (diff(range(t$Y[, 1])) > diff(range(t$Y[, 2]))) t$Y <- t$Y[, 2:1]   # t-SNE orientation is arbitrary: longer extent vertical
+  t
+}
+Z <- scale(pca_data)                         # same centring and scaling as the PCA
+tsne_result <- tsne_run(Z)
+key("tsne_kl", tail(tsne_result$itercosts, 1))
+cat("Final KL divergence:", round(tail(tsne_result$itercosts, 1), 3), "\n")
+save_key_numbers()
+```
+
+### 3.3 Figure 2 – PCA biplot and t-SNE
+
+```{r fig.width=16, fig.height=9}
+dataset_cols <- c("Gul et al." = "#5B2A86", "Nanopharos" = "#008E9B", "Labouta et al." = "#D95F02")
+pretty_ds <- function(x) dplyr::recode(trimws(x), "Gul. Et al.." = "Gul et al.", "Nanopharos" = "Nanopharos", "Labouta Et. Al." = "Labouta et al.")
+
+# height, their widths follow their aspect ratios (two_panels)
+panel_axes <- function(xs, ys, margin = 0.04, drop_min_x = FALSE) {
+  # one tick step for both axes of the panel (chosen by pretty() for the larger of the two ranges), limits of each axis rounded up to it
+  mx <- max(abs(xs), na.rm = TRUE) * (1 + margin); my <- max(abs(ys), na.rm = TRUE) * (1 + margin)
+  step <- diff(pretty(c(-1, 1) * max(mx, my), n = 6)[1:2])
+  # the x axis is labelled at every tick; on the y axis the lowest tick carries no label, so that the corner shows one label only
+  axis <- function(m, drop_min = FALSE) { L <- ceiling(m / step) * step; b <- seq(-L, L, by = step); list(lim = c(-L, L), breaks = b, labels = ifelse(drop_min & b == -L, "", b)) }
+  list(x = axis(mx, drop_min = drop_min_x), y = axis(my, drop_min = TRUE))
+}
+pca_panel <- function(p, dset, arrows = TRUE, title = NULL) {
+  ve <- 100 * summary(p)$importance[2, 1:2]
+  df <- data.frame(PC1 = p$x[, 1], PC2 = p$x[, 2], dataset = pretty_ds(dset))
+  g <- ggplot(df, aes(PC1, PC2)) + geom_point(aes(color = dataset), alpha = 0.55, size = 1.6)
+  if (arrows) {
+    a <- data.frame(xend = 4 * p$corr[, 1], yend = 4 * p$corr[, 2], variable = unname(var_display[rownames(p$corr)]))
+    g <- g + geom_segment(data = a, aes(x = 0, y = 0, xend = xend, yend = yend), arrow = arrow(length = unit(0.3, "cm"), type = "closed"),
+                          color = "black", linewidth = 0.7, alpha = 0.7) +
+
+      ggrepel::geom_text_repel(data = a, aes(x = xend, y = yend, label = variable), color = "black", bg.color = "white", bg.r = 0.18,
+                               size = 5, fontface = "bold", min.segment.length = Inf, box.padding = 0.4, seed = 1)
+  }
+  xs <- c(df$PC1, if (arrows) 4 * p$corr[, 1]); ys <- c(df$PC2, if (arrows) 4 * p$corr[, 2])
+  pa <- panel_axes(xs, ys); ax <- pa$x; ay <- pa$y; xl <- ax$lim; yl <- ay$lim
+  g <- g + scale_x_continuous(breaks = ax$breaks, labels = ax$labels) + scale_y_continuous(breaks = ay$breaks, labels = ay$labels) +
+    coord_fixed(xlim = xl, ylim = yl, expand = FALSE, clip = "off") + theme_minimal() +
+    theme(axis.title = element_text(size = 22, face = "bold"), axis.text = element_text(size = 18), legend.position = "none",
+          plot.margin = margin(t = 16, r = 16, b = 6, l = 6)) +
+    labs(x = sprintf("PC1 (%.1f%%)", ve[1]), y = sprintf("PC2 (%.1f%%)", ve[2]), title = title) +
+    scale_color_manual(values = dataset_cols, name = "Dataset")
+  attr(g, "aspect") <- diff(yl) / diff(xl)
+  g
+}
+tsne_panel <- function(t, dset, title = NULL) {
+  df <- data.frame(Dim1 = t$Y[, 1], Dim2 = t$Y[, 2], dataset = pretty_ds(dset))
+  pa <- panel_axes(df$Dim1, df$Dim2, drop_min_x = TRUE); ax <- pa$x; ay <- pa$y; xl <- ax$lim; yl <- ay$lim   # t-SNE: no label at the left end of the x axis either
+  g <- ggplot(df, aes(Dim1, Dim2, color = dataset)) + geom_point(alpha = 0.55, size = 1.6) +
+    scale_x_continuous(breaks = ax$breaks, labels = ax$labels) + scale_y_continuous(breaks = ay$breaks, labels = ay$labels) +
+    coord_fixed(xlim = xl, ylim = yl, expand = FALSE, clip = "off") + theme_minimal() +
+    theme(axis.title = element_text(size = 22, face = "bold"), axis.text = element_text(size = 18), legend.position = "none",
+          plot.margin = margin(t = 16, r = 16, b = 6, l = 6)) +
+    labs(x = "t-SNE Dim1", y = "t-SNE Dim2", title = title) + scale_color_manual(values = dataset_cols, name = "Dataset")
+  attr(g, "aspect") <- diff(yl) / diff(xl)
+  g
+}
+legend_of <- function() {
+  df <- data.frame(x = 1:3, y = 1:3, dataset = names(dataset_cols))
+  get_legend(ggplot(df, aes(x, y, color = dataset)) + geom_point(size = 3) + scale_color_manual(values = dataset_cols, name = "Dataset") +
+               theme_minimal() + theme(legend.position = "bottom", legend.title = element_text(size = 14, face = "bold"),
+                                       legend.text = element_text(size = 12), legend.background = element_rect(fill = "white", color = "black")) +
+               guides(color = guide_legend(nrow = 1, override.aes = list(size = 4))))
+}
+legend_plain <- function() {
+  # readable legend: large markers, large text, no frame, one row under the panels
+  df <- data.frame(x = 1:3, y = 1:3, dataset = names(dataset_cols))
+  get_legend(ggplot(df, aes(x, y, color = dataset)) + geom_point(size = 6) + scale_color_manual(values = dataset_cols, name = NULL) +
+               theme_minimal() + theme(legend.position = "bottom", legend.text = element_text(size = 20), legend.key.width = unit(1.5, "cm"),
+                                       legend.spacing.x = unit(1, "cm")) +
+               guides(color = guide_legend(nrow = 1, override.aes = list(size = 7, alpha = 1))))
+}
+two_panels <- function(a, b, file, width = 16, height = 8, legend = FALSE) {
+  
+  asp <- c(attr(a, "aspect") %||% 1, attr(b, "aspect") %||% 1)
+  panels <- plot_grid(a, b, ncol = 2, align = "h", axis = "tb", labels = c("A", "B"), label_size = 20, rel_widths = 1 / asp)
+  g <- if (legend) plot_grid(panels, legend_plain(), ncol = 1, rel_heights = c(1, 0.08)) else panels
+  ggsave(file, g, width = width, height = if (legend) height + 0.7 else height, dpi = 300, bg = "white")
+  g
+}
+
+write.csv(data.frame(PC1 = pca_result$x[, 1], PC2 = pca_result$x[, 2], dataset = pretty_ds(ds), material = final_data$Material[pca_keep_idx]),
+          out("tables", "pca_coordinates.csv"), row.names = FALSE)
+write.csv(data.frame(Dim1 = tsne_result$Y[, 1], Dim2 = tsne_result$Y[, 2], dataset = pretty_ds(ds), material = final_data$Material[pca_keep_idx]),
+          out("tables", "tsne_coordinates.csv"), row.names = FALSE)
+fig2 <- two_panels(pca_panel(pca_result, ds), tsne_panel(tsne_result, ds), out("figures", "Figure_2_PCA_tSNE.png"))
+invisible(two_panels(pca_panel(pca_result, ds), tsne_panel(tsne_result, ds), out("figures", "Figure_2_PCA_tSNE_legend.png"), legend = TRUE))   # variant with a plain legend
+print(fig2)
+```
+
+### 3.4 Figures S1 and S2
+
+```{r fig.width=16, fig.height=9}
+# Figure S1: unique five-variable profiles (first occurrence in the order of the input file), re-centred and re-scaled
+u <- !duplicated(pca_data)
+pca_u  <- run_pca(pca_data[u, ])
+tsne_u <- tsne_run(scale(pca_data[u, ]), check_duplicates = TRUE)
+key("figS1_n", sum(u)); key("figS1_corr_zeta_PC1", pca_u$corr["Zeta_in_Water (mV)", 1])
+print(two_panels(pca_panel(pca_u, ds[u]), tsne_panel(tsne_u, ds[u]), out("figures", "Figure_S1_unique_profiles.png")))
+```
+
+```{r fig.width=15, fig.height=15}
+# Figure S2: t-SNE sensitivity to perplexity and seed.
+grid <- expand.grid(perplexity = c(30, 50, 100), seed = c(123, 456, 789))
+runs <- lapply(seq_len(nrow(grid)), function(i) tsne_run(Z, perplexity = grid$perplexity[i], seed = grid$seed[i]))
+kl_hist <- sapply(runs, function(t) t$itercosts)                    # rows: iterations 50, 100, ..., 2000; columns: runs of the grid
+rownames(kl_hist) <- seq(50, 2000, 50)
+colnames(kl_hist) <- sprintf("p%d_s%d", grid$perplexity, grid$seed)
+print(round(kl_hist[c("300", "500", "1000", "1500", "2000"), ], 3))
+for (r in colnames(kl_hist)) key(paste0("tsne_kl_", r), kl_hist["2000", r])
+key("tsne_kl_final_min", min(kl_hist["2000", ])); key("tsne_kl_final_max", max(kl_hist["2000", ]))
+key("tsne_kl_change_1500_2000_max", max(abs(kl_hist["2000", ] - kl_hist["1500", ])))
+panels <- lapply(seq_len(nrow(grid)), function(i)
+  tsne_panel(runs[[i]], ds, title = sprintf("perplexity %d, seed %d", grid$perplexity[i], grid$seed[i])) +
+    theme(axis.title = element_text(size = 11), plot.title = element_text(size = 12)))
+figS2 <- wrap_plots(panels, ncol = 3)
+ggsave(out("figures", "Figure_S2_tSNE_sensitivity.png"), figS2, width = 15, height = 15, dpi = 200, bg = "white")
+save_key_numbers()
+print(figS2)
+```

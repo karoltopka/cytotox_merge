@@ -1,0 +1,68 @@
+---
+title: "1. Setup and data"
+output: html_document
+---
+
+Packages with their versions, purposes and citations (Table S8 of the Supplementary Materials) and the dataset. Paths: `R/paths.R`;
+packages and the loading of the data: `R/setup.R`. Data: the final dataset after verification against the publications (viability
+0-200 %).
+
+```{r setup-module, include=FALSE}
+source("R/setup.R", local = knitr::knit_global())
+```
+
+### 1.1 Packages, versions, purpose and citations
+
+Only the packages the modules use (loaded in `R/setup.R`); the citation of each comes from its own `citation()`.
+Not listed: knitr and rmarkdown (rendering of the HTML reports) and the base packages stats, utils, grid (part of R).
+
+```{r}
+used_for <- c(
+  R = "analyses and figures; base package stats: PCA (prcomp), Welch t, Wilcoxon and Kruskal-Wallis tests, likelihood-ratio tests, correlations, Holm adjustment",
+  dplyr = "data handling",
+  stringr = "string operations (organ labels of Figure 2)",
+  forcats = "ordering of the categories in the bar charts (Figures S6-S8)",
+  ggplot2 = "figures (incl. viridis colour scales)",
+  patchwork = "multi-panel figures (Figures S2 and S9)",
+  cowplot = "two-panel PCA / t-SNE figures with a shared legend (Figure 1, Figure S1)",
+  ggh4x = "nested facets (Figure 2)",
+  ggrepel = "non-overlapping labels of the PCA arrows",
+  readxl = "reading the dataset (xlsx)",
+  effsize = "effect size of coated vs uncoated (Cohen's d)",
+  car = "Levene's test of equal variances (coated vs uncoated)",
+  lme4 = "linear mixed-effects models",
+  pbkrtest = "Kenward-Roger F-tests of the mixed models",
+  emmeans = "coated vs uncoated contrasts within each nanomaterial (mixed model)",
+  Rtsne = "t-SNE"
+)
+packages <- setdiff(names(used_for), "R")
+cite_text <- function(pkg) {  # every entry of the package's own citation(), plain text
+  ci <- if (pkg == "R") citation() else citation(pkg)
+  txt <- vapply(seq_along(ci), function(i) paste(format(ci[i], style = "text"), collapse = " "), character(1))
+  paste(gsub("\\s+", " ", gsub("[_*]|<|>", "", txt)), collapse = " || ")
+}
+versions_df <- data.frame(
+  Package = names(used_for),
+  Version = c(paste(R.version$major, R.version$minor, sep = "."), vapply(packages, function(x) as.character(packageVersion(x)), character(1))),
+  Used_for = unname(used_for),
+  Citation = vapply(names(used_for), cite_text, character(1)),
+  stringsAsFactors = FALSE
+)
+print(versions_df[, c("Package", "Version", "Used_for")], row.names = FALSE)
+write.csv(versions_df, out("tables", "package_versions.csv"), row.names = FALSE)
+```
+
+```{r}
+# citations as given by the packages
+for (i in seq_len(nrow(versions_df))) cat("=== ", versions_df$Package[i], " ===\n", gsub(" \\|\\| ", "\n", versions_df$Citation[i]), "\n\n")
+```
+
+### 1.2 Data
+
+```{r}
+cat("File:", DATA_FILE, "\n")
+cat("Records:", nrow(final_data), "| columns:", ncol(final_data), "\n")
+print(table(final_data$Dataset))
+key("rows", nrow(final_data))
+save_key_numbers()
+```

@@ -1,0 +1,104 @@
+---
+title: "3. Figures of the categorical variables"
+output: html_document
+---
+
+Figure 3 (mean viability of every cell line x nanomaterial, grouped by cell family and organ), the coverage of the organ x nanomaterial
+combinations, Figure S3 (coated and uncoated nanomaterials) and the bar charts of Figures S6-S8. The organ
+names are shortened for Figure 3 on a local copy of the data.
+
+```{r setup-module, include=FALSE}
+source("R/setup.R", local = knitr::knit_global())
+```
+
+### 3.1 Mean viability per organ x nanomaterial
+
+```{r}
+cell_counts     <- final_data %>% count(Cell_organ) %>% arrange(n)
+material_counts <- final_data %>% count(Material) %>% arrange(n)
+df_heat <- final_data %>%
+  group_by(Cell_organ, Material) %>%
+  summarise(Viability_mean = mean(`Cell_Viability (%)`, na.rm = TRUE), .groups = "drop") %>%
+  mutate(Cell_organ = factor(Cell_organ, levels = cell_counts$Cell_organ), Material = factor(Material, levels = material_counts$Material))
+print(df_heat %>% arrange(desc(Viability_mean)), n = 10)
+```
+
+### 3.2 Figure 3 - cell lines x nanomaterials, grouped by cell family and organ
+
+```{r fig.width=18, fig.height=26}
+# local copy with shortened organ labels
+hm <- final_data %>% mutate(Cell_organ = stringr::str_remove(Cell_organ, " tissue$| epithelium$"))
+fam_counts   <- hm %>% count(Cell_type_family, name = "fam_n") %>% arrange(desc(fam_n))
+organ_counts <- hm %>% count(Cell_organ, name = "organ_n") %>% arrange(desc(organ_n))
+cell_order <- hm %>% count(Cell_Type, Cell_organ, Cell_type_family, name = "cell_n") %>%
+  left_join(fam_counts, by = "Cell_type_family") %>% left_join(organ_counts, by = "Cell_organ") %>%
+  arrange(desc(fam_n), desc(organ_n), desc(cell_n))
+stopifnot(!any(duplicated(cell_order$Cell_Type)))   # one organ and one family per cell line (else the factor levels repeat)
+mat_order <- hm %>% count(Material) %>% arrange(desc(n))
+df3 <- hm %>% group_by(Cell_Type, Cell_organ, Cell_type_family, Material) %>%
+  summarise(Viability_mean = mean(`Cell_Viability (%)`, na.rm = TRUE), .groups = "drop") %>%
+  mutate(Cell_Type = factor(Cell_Type, levels = rev(cell_order$Cell_Type)),
+         Cell_organ = factor(Cell_organ, levels = unique(cell_order$Cell_organ)),
+         Cell_type_family = factor(Cell_type_family, levels = fam_counts$Cell_type_family),
+         Material = factor(Material, levels = mat_order$Material))
+strip_txt <- element_text(angle = 0, face = "bold", size = 16, hjust = 0.5, vjust = 0.5, lineheight = 0.9, margin = margin(l = 4, r = 4))
+fig3 <- ggplot(df3, aes(x = Material, y = Cell_Type, fill = Viability_mean)) + geom_tile(color = "white") +
+  scale_fill_viridis_c(name = "Viability (%)") +
+  facet_nested(Cell_type_family + Cell_organ ~ ., scales = "free_y", space = "free_y", nest_line = element_line(color = "grey60"),
+               strip = strip_nested(text_y = list(strip_txt, strip_txt),
+                                    background_y = list(element_rect(fill = "grey85", color = "grey60"), element_rect(fill = "grey95", color = "grey70")))) +
+  theme_minimal() + labs(x = "Material", y = NULL) +
+  theme(axis.title.x = element_text(size = 22, face = "bold", margin = margin(t = 10)), axis.text.x = element_text(angle = 45, hjust = 1, size = 18),
+        axis.text.y = element_text(size = 16), strip.placement = "outside", panel.spacing.y = unit(1, "pt"),
+        legend.title = element_text(size = 20, face = "bold"), legend.text = element_text(size = 18),
+        legend.key.height = unit(2.5, "cm"), legend.key.width = unit(1.2, "cm"))
+ggsave(out("figures", "Figure_3_heatmap_cell_lines_by_family_organ.png"), fig3, width = 18, height = 26, dpi = 300, bg = "white")
+key("n_cell_lines", n_distinct(final_data$Cell_Type)); key("n_organs", n_distinct(final_data$Cell_organ))
+key("n_materials", n_distinct(final_data$Material)); save_key_numbers()
+```
+
+### 3.3 Coverage of the organ x nanomaterial combinations
+
+```{r}
+n_organs    <- n_distinct(final_data$Cell_organ)
+n_materials <- n_distinct(final_data$Material)
+potential_pairs <- n_organs * n_materials
+actual_pairs    <- nrow(df_heat)
+coverage_percentage <- 100 * actual_pairs / potential_pairs
+key("material_organ_pairs", actual_pairs); key("material_organ_possible", potential_pairs); key("coverage_pct", coverage_percentage)
+save_key_numbers()
+cat(sprintf("Organs %d x nanomaterials %d = %d possible pairs; %d explored (%.1f%%)\n", n_organs, n_materials, potential_pairs, actual_pairs, coverage_percentage))
+print(df_heat %>% count(Cell_organ, sort = TRUE, name = "materials"), n = Inf)
+```
+
+### 3.4 Figure S3 - viability of coated and uncoated nanomaterials
+
+```{r fig.width=11, fig.height=5}
+coat_bin <- final_data %>%
+  mutate(Coat_label = if_else(Coat == "Uncoated" | is.na(Coat), "Uncoated", "Coated")) %>%
+  filter(!is.na(`Cell_Viability (%)`))
+g <- gradient_violin(coat_bin, "Coat_label", "Viability (%) of coated and uncoated nanomaterials")   # gradient violin, R/violin_gradient_utils.R
+ggsave(out("figures", "Figure_S3_coated_vs_uncoated.png"), g, width = 11, height = 5, dpi = 300, bg = "white")
+print(g)
+```
+
+### 3.5 Figures S6-S8 - number of records per nanomaterial, per coating and per mass concentration
+
+```{r fig.width=8, fig.height=6}
+for (spec in list(c("Material", "Figure_S6_records_per_nanomaterial.png"), c("Coat", "Figure_S7_records_per_coating.png"))) {
+  cn <- spec[1]
+  counts <- final_data %>% count(.data[[cn]], name = "n") %>% arrange(desc(n))
+  print(counts, n = 15)
+  g <- ggplot(counts, aes(x = fct_reorder(as.factor(.data[[cn]]), n), y = n)) + geom_col(fill = "#74c476") + coord_flip() + theme_bw() +
+    labs(title = paste("Records per", var_label(cn)), x = var_label(cn, TRUE), y = "Records") + theme_uniform
+  ggsave(out("figures", spec[2]), g, width = 8, height = max(3, 0.18 * nrow(counts) + 1.5), dpi = 200, bg = "white", limitsize = FALSE)
+  print(g)
+}
+# concentrations in ug/mL (1 g/L = 1000 ug/mL),
+conc_counts <- final_data %>% filter(!is.na(`Concentration (g/l)2`)) %>% count(Conc = signif(`Concentration (g/l)2` * 1000, 3), name = "n") %>% arrange(desc(n))
+cat("\nDistinct concentrations (ug/mL, 3 significant digits):", nrow(conc_counts), "\n"); print(head(conc_counts, 20))
+g <- ggplot(head(conc_counts, 40), aes(x = fct_reorder(as.factor(Conc), n), y = n)) + geom_col(fill = "#74c476") + coord_flip() + theme_bw() +
+  labs(title = "Most frequent concentrations (\u00b5g/mL)", x = "Concentration (\u00b5g/mL)", y = "Records") + theme_uniform
+ggsave(out("figures", "Figure_S8_most_frequent_concentrations.png"), g, width = 8, height = 9, dpi = 200, bg = "white")
+print(g)
+```

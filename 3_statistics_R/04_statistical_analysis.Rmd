@@ -1,0 +1,299 @@
+---
+title: "4. Statistical analysis"
+output: html_document
+---
+
+Coating (exploratory), the distributions of viability by species, organ, exposure time and cell line (Figures S4, S5 and S9) and the
+mixed-effects models of species, tumour status and organ (Tables S6, S7 and S7.1). Medians and shares of all records are computed on all
+records; the models use the records with a mass concentration.
+
+
+```{r setup-module, include=FALSE}
+source("R/setup.R", local = knitr::knit_global())
+viab <- "Cell_Viability (%)"
+```
+
+## 4.1 Coating (exploratory)
+
+```{r, message=FALSE, warning=FALSE}
+data_coating_binary <- final_data %>%
+  mutate(Coat_01 = if_else(Coat == "Uncoated" | is.na(Coat), 0L, 1L)) %>%
+  filter(!is.na(.data[[viab]]))
+uncoated_viab <- data_coating_binary %>% filter(Coat_01 == 0) %>% pull(all_of(viab))
+coated_viab   <- data_coating_binary %>% filter(Coat_01 == 1) %>% pull(all_of(viab))
+data_coating_binary %>% group_by(Group = if_else(Coat_01 == 0, "Uncoated", "Coated")) %>%
+  summarise(n = n(), mean = mean(.data[[viab]]), sd = sd(.data[[viab]]), median = median(.data[[viab]]), .groups = "drop") %>% print()
+print(car::leveneTest(`Cell_Viability (%)` ~ as.factor(Coat_01), data = data_coating_binary))
+t_coat <- t.test(uncoated_viab, coated_viab, var.equal = FALSE)
+w_coat <- wilcox.test(uncoated_viab, coated_viab, conf.int = TRUE)
+cat(sprintf("Welch t = %.3f, p = %s | Mann-Whitney W = %.0f, p = %s | Cohen's d = %.3f\n", t_coat$statistic, format.pval(t_coat$p.value),
+            w_coat$statistic, format.pval(w_coat$p.value), effsize::cohen.d(coated_viab, uncoated_viab)$estimate))
+key("coat_n_uncoated", length(uncoated_viab)); key("coat_n_coated", length(coated_viab)); key("coat_mw_p", w_coat$p.value)
+```
+
+```{r coating-mixed-models, message=FALSE, warning=FALSE}
+mm <- data.frame(viab = final_data[[viab]],
+                 coat = factor(ifelse(is.na(final_data$Coat) | final_data$Coat %in% c("Uncoated", "0"), "Uncoated", "Coated"), levels = c("Uncoated", "Coated")),
+                 DOI = factor(final_data$DOI), Material = factor(final_data$Material), Cell = factor(final_data$Cell_Type)) %>%
+  filter(!is.na(viab))
+eff <- function(m) { co <- summary(m)$coefficients; sprintf("%+.2f pp (SE %.2f, t %.2f)", co[2, 1], co[2, 2], co[2, 3]) }
+lrt_p <- function(m0, m1) anova(m0, m1)$`Pr(>Chisq)`[2]
+m_ols <- lm(viab ~ coat, mm)
+m_doi <- lmer(viab ~ coat + (1 | DOI), mm, REML = FALSE); m_doi0 <- lmer(viab ~ 1 + (1 | DOI), mm, REML = FALSE)
+m_full <- lmer(viab ~ coat + (1 | DOI) + (1 | Material) + (1 | Cell), mm, REML = FALSE)
+m_full0 <- lmer(viab ~ 1 + (1 | DOI) + (1 | Material) + (1 | Cell), mm, REML = FALSE)
+vc <- as.data.frame(VarCorr(m_doi))
+cat(sprintf("1) OLS: %s\n2) + (1|DOI): %s  p(LRT) = %s  ICC(DOI) = %.2f\n3) + DOI+Material+Cell: %s  p(LRT) = %s\n", eff(m_ols), eff(m_doi),
+            format.pval(lrt_p(m_doi0, m_doi)), vc$vcov[vc$grp == "DOI"] / sum(vc$vcov), eff(m_full), format.pval(lrt_p(m_full0, m_full))))
+tab <- table(mm$Material, mm$coat)
+both <- rownames(tab)[tab[, "Coated"] > 0 & tab[, "Uncoated"] > 0]
+sub <- droplevels(mm[mm$Material %in% both, ])
+m_add <- lmer(viab ~ coat + Material + (1 | DOI) + (1 | Cell), sub, REML = FALSE)
+m_int <- lmer(viab ~ coat * Material + (1 | DOI) + (1 | Cell), sub, REML = FALSE)
+cat(sprintf("Within-material (%d materials, N = %d): coat x Material LRT p = %s\n", length(both), nrow(sub), format.pval(lrt_p(m_add, m_int))))
+ct <- summary(emmeans::contrast(emmeans::emmeans(m_int, ~ coat | Material), "revpairwise"), infer = TRUE)
+print(data.frame(Material = ct$Material, Delta_pp = round(ct$estimate, 1), p_value = round(ct$p.value, 4))[order(-ct$estimate), ], row.names = FALSE)
+save_key_numbers()
+```
+
+## 4.2 Distributions by species, organ, exposure time and cell line (Figures S4, S5 and S9)
+
+```{r warning=FALSE, fig.width=12, fig.height=8}
+p_sp <- composition_violin(final_data, "Animal_mapped_combined", "A   Species")
+p_org <- composition_violin(final_data, "Cell_organ", "B   Organ or anatomical site")
+p <- (p_sp / p_org) + plot_layout(heights = c(6, 19), guides = "collect")
+ggsave(out("figures", "Figure_S9_viability_by_species_and_organ.png"), p, width = 12, height = 13, dpi = 300, bg = "white")
+print(p)
+for (spec in list(c("Time (hr)", "Viability (%) by exposure time", "Figure_S4_viability_by_exposure_time.png"),
+                  c("Cell_Type", "Viability (%) by cell line", "Figure_S5_viability_by_cell_line.png"))) {
+  p <- gradient_violin(final_data, spec[1], spec[2])   # gradient violin, R/violin_gradient_utils.R
+  ggsave(out("figures", spec[3]), p, width = 12, height = if (spec[1] == "Cell_Type") 16 else 8, dpi = 300, bg = "white")
+  print(p)
+}
+```
+
+```{r}
+desc_by <- function(col) final_data %>% group_by(.data[[col]]) %>%
+  summarise(n = n(), mean_viab = mean(.data[[viab]]), median_viab = median(.data[[viab]]), sd_viab = sd(.data[[viab]]), .groups = "drop") %>% arrange(desc(n))
+sp_all <- desc_by("Animal_mapped_combined"); print(sp_all)
+for (s in c("human", "mouse", "rat")) { r <- sp_all[sp_all$Animal_mapped_combined == s, ]; key(paste0("n_", s), r$n); key(paste0("median_", s), r$median_viab) }
+print(desc_by("Cell_organ"), n = Inf)
+tm <- desc_by("Time (hr)"); print(tm)
+key("n_24h", tm$n[tm$`Time (hr)` %in% 24]); key("n_48h", tm$n[tm$`Time (hr)` %in% 48]); key("n_72h", tm$n[tm$`Time (hr)` %in% 72])
+save_key_numbers()
+```
+
+## 4.3 Mixed-effects models: species, tumour status and organ
+
+Records with a mass concentration; `lcc` = log10 concentration (g/L) centred at its mean.
+```{r mixed-setup, message=FALSE, warning=FALSE}
+RE <- c(B = "(1 | DOI) + (1 + lcc || Material) + (1 + lcc || Cell)",       # primary
+        A = "(1 | DOI) + (1 | Material)",                                    # original code
+        M = "(1 + lcc | DOI) + (1 + lcc | Material) + (1 + lcc | Cell)",     # maximal (sensitivity)
+        T = "(1 | DOI) + (1 + lcc || Material) + (1 + lcc || Cell) + (1 | Test)",      # B + assay
+        S = "(1 | DOI) + (1 + lcc || Material) + (1 + lcc || Cell) + (1 | series)")    # B + experimental series
+SPEC_LABEL <- c(B = "B primary: publication, material, cell line + dose slopes; covariates log10 dose and log10 time",
+                A = "A original code: publication, material", M = "M maximal: correlated intercepts and dose slopes",
+                T = "T: B + random intercept for the assay", S = "S: B + random intercept for the experimental series",
+                N = "N: B without exposure time")
+PRE <- c(B = "", A = "original_", M = "maximal_", T = "assay_", S = "series_")
+FX <- "lcc + lt"                                                             # fixed covariates of every model: log10 dose and log10 exposure time
+ctrl <- lmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))
+mm_dat <- final_data %>%
+  transmute(v = .data[[viab]], sp = Animal_mapped_combined, can = Cancer, org = Cell_organ, time = `Time (hr)`, Test = factor(Test),
+            conc = suppressWarnings(as.numeric(`Concentration (g/l)2`)), DOI = factor(DOI), Material = factor(Material), Cell = factor(Cell_Type)) %>%
+  filter(!is.na(v), !is.na(conc), conc > 0, !is.na(time), time > 0) %>%
+  mutate(lc = log10(conc), lcc = lc - mean(lc), lt = log10(time) - mean(log10(time)), series = factor(paste(DOI, Material, Cell, Test)))
+LC_MEAN <- mean(mm_dat$lc)
+fit_mm <- function(fx, data, spec, reml = FALSE) lmer(as.formula(paste("v ~", fx, "+", RE[[spec]])), data = data, REML = reml, control = ctrl)
+lrt <- function(m0, m1) { a <- anova(m0, m1); c(chi2 = a$Chisq[2], df = a$Df[2], p = a$`Pr(>Chisq)`[2]) }
+kr  <- function(f_big, f_small, data) {
+  k <- KRmodcomp(fit_mm(f_big, data, "B", TRUE), fit_mm(f_small, data, "B", TRUE))$test
+  c(F = k["Ftest", "stat"], ndf = k["Ftest", "ndf"], ddf = k["Ftest", "ddf"], p = k["Ftest", "p.value"])
+}
+# slope of dose (pp per decade) in each level of a factor from an interaction model, with Wald 95% CI
+level_slopes <- function(m, fac, levels_) {
+  b <- fixef(m); V <- as.matrix(vcov(m))
+  do.call(rbind, lapply(levels_, function(g) {
+    nm <- c("lcc", paste0("lcc:", fac, g)); nm <- nm[nm %in% names(b)]
+    est <- sum(b[nm]); se <- sqrt(sum(V[nm, nm]))
+    data.frame(level = g, slope = est, ci_low = est - 1.96 * se, ci_high = est + 1.96 * se)
+  }))
+}
+TESTS <- list()
+add_test <- function(analysis, test, spec, r) TESTS[[length(TESTS) + 1]] <<- data.frame(analysis, test, spec, stat = unname(r[1]), df = unname(r[2]), p = unname(r["p"]),
+                                                                                    ddf = if ("ddf" %in% names(r)) unname(r["ddf"]) else NA)
+cat(sprintf("Records with a mass concentration: %d | publications %d | materials %d | cell lines %d | mean log10 dose %.2f (%.4f g/L)\n",
+            nrow(mm_dat), nlevels(droplevels(mm_dat$DOI)), nlevels(droplevels(mm_dat$Material)), nlevels(droplevels(mm_dat$Cell)), LC_MEAN, 10^LC_MEAN))
+key("mm_N", nrow(mm_dat)); key("mm_n_cell_lines", nlevels(droplevels(mm_dat$Cell))); key("mm_pubs", nlevels(droplevels(mm_dat$DOI)))
+two <- function(f) sum((mm_dat %>% filter(!is.na(.data[[f]])) %>% group_by(DOI) %>% summarise(k = n_distinct(.data[[f]]), .groups = "drop"))$k >= 2)
+key("pubs_two_species", two("sp")); key("pubs_two_status", two("can")); key("pubs_two_organs", two("org"))   # publications that contain two levels
+```
+
+### 4.3.1 Species (Table S6)
+
+```{r species-viability-mixed, message=FALSE, warning=FALSE}
+sp_df <- mm_dat %>% filter(!is.na(sp)) %>% mutate(sp = relevel(factor(sp), ref = "human"))
+print(sp_df %>% group_by(sp) %>% summarise(n = n(), cell_lines = n_distinct(Cell), publications = n_distinct(DOI), median = round(median(v), 1), .groups = "drop") %>% arrange(desc(n)))
+kw <- kruskal.test(v ~ sp, sp_df)                         # unadjusted: records treated as independent
+key("kw_H", kw$statistic); key("kw_df", kw$parameter); key("kw_p", kw$p.value); key("kw_n", nrow(sp_df))
+for (s in names(RE)) {
+  m0 <- fit_mm(FX, sp_df, s); m1 <- fit_mm(paste(FX, "+ sp"), sp_df, s)
+  r <- lrt(m0, m1); add_test("species", "species | dose", s, r)
+  co <- summary(m1)$coefficients; rows <- grep("^sp", rownames(co))
+  p_h <- p.adjust(2 * pnorm(-abs(co[rows, "t value"])), "holm")     # each species vs human, Wald z, Holm
+  pre <- PRE[[s]]
+  key(paste0(pre, "sp_lrt_chi2"), r["chi2"]); key(paste0(pre, "sp_lrt_df"), r["df"]); key(paste0(pre, "sp_lrt_p"), r["p"])
+  key(paste0(pre, "sp_min_p_vs_human_holm"), min(p_h))
+  if (s == "B") {
+    k <- kr(paste(FX, "+ sp"), FX, sp_df); add_test("species", "species | dose (Kenward-Roger)", s, k); key("sp_kr_p", k["p"])
+    key("time_slope", fixef(m1)["lt"]); key("time_lrt_p", lrt(fit_mm("lcc + sp", sp_df, s), m1)["p"])     # effect of log10 exposure time in the species model
+    sp_tab <- sp_df %>% group_by(species = as.character(sp)) %>%
+      summarise(records = n(), cell_lines = n_distinct(Cell), publications = n_distinct(DOI), median = median(v), mean = mean(v), .groups = "drop") %>%
+      left_join(data.frame(species = sub("^sp", "", rownames(co)[rows]), diff_vs_human = co[rows, "Estimate"], se = co[rows, "Std. Error"],
+                           ci_low = co[rows, "Estimate"] - qnorm(0.975) * co[rows, "Std. Error"], ci_high = co[rows, "Estimate"] + qnorm(0.975) * co[rows, "Std. Error"],
+                           p_holm = p_h), by = "species") %>% arrange(desc(records))
+    write.csv(sp_tab, out("tables", "Table_S6_viability_by_species.csv"), row.names = FALSE)
+  }
+}
+save_key_numbers()
+```
+
+### 4.3.2 Tumour status
+
+```{r cancer-viability-mixed, message=FALSE, warning=FALSE}
+can_all <- final_data %>% filter(!is.na(.data[[viab]]), Cancer %in% c("Yes", "No"))   # records without a tumour status left out
+med <- can_all %>% group_by(Cancer) %>% summarise(n = n(), median = median(.data[[viab]]), .groups = "drop"); print(med)
+key("cancer_share", 100 * mean(can_all$Cancer == "Yes"))
+key("med_cancer", med$median[med$Cancer == "Yes"]); key("med_noncancer", med$median[med$Cancer == "No"])
+can_df <- mm_dat %>% filter(can %in% c("Yes", "No")) %>% mutate(can = factor(can, levels = c("No", "Yes")))
+cat(sprintf("Cell lines: cancer %d, non-cancer %d\n", n_distinct(can_df$Cell[can_df$can == "Yes"]), n_distinct(can_df$Cell[can_df$can == "No"])))
+mw <- wilcox.test(v ~ can, can_df)                       # unadjusted, records with a mass concentration
+key("mw_p", mw$p.value); key("mw_n", nrow(can_df))
+for (s in names(RE)) {
+  c0 <- fit_mm(FX, can_df, s); c1 <- fit_mm(paste(FX, "+ can"), can_df, s); c2 <- fit_mm(paste(FX, "+ can + lcc:can"), can_df, s)
+  r1 <- lrt(c0, c1); r2 <- lrt(c1, c2)
+  add_test("tumour status", "cancer | dose", s, r1); add_test("tumour status", "dose x cancer", s, r2)
+  sl <- level_slopes(c2, "can", c("No", "Yes"))
+  pre <- PRE[[s]]
+  key(paste0(pre, "int_singular"), as.integer(isSingular(c2)))   # a boundary fit: the dose-slope variances of publications and cell lines are not separable
+  key(paste0(pre, "cancer_main_p"), r1["p"]); key(paste0(pre, "int_chi2"), r2["chi2"]); key(paste0(pre, "int_p"), r2["p"])
+  key(paste0(pre, "slope_noncancer"), sl$slope[1]); key(paste0(pre, "slope_cancer"), sl$slope[2])
+  cat(sprintf("[%s] cancer | dose: p = %s; dose x cancer: chi2 = %.1f, p = %s; slopes non-cancer %.1f [%.1f, %.1f], cancer %.1f [%.1f, %.1f] pp per decade\n",
+              s, format.pval(r1["p"], 3), r2["chi2"], format.pval(r2["p"], 3), sl$slope[1], sl$ci_low[1], sl$ci_high[1], sl$slope[2], sl$ci_low[2], sl$ci_high[2]))
+  if (s == "B") {
+    k1 <- kr(paste(FX, "+ can"), FX, can_df); k2 <- kr(paste(FX, "+ can + lcc:can"), paste(FX, "+ can"), can_df)
+    add_test("tumour status", "cancer | dose (Kenward-Roger)", s, k1); add_test("tumour status", "dose x cancer (Kenward-Roger)", s, k2)
+    key("cancer_main_kr_p", k1["p"]); key("int_kr_p", k2["p"])
+  }
+}
+save_key_numbers()
+```
+
+Within the publications that tested both tumour and non-tumour lines, the status is compared with the publication held fixed
+(specification B, LRT).
+
+```{r cancer-within-publications, message=FALSE, warning=FALSE}
+both <- can_df %>% group_by(DOI) %>% filter(n_distinct(can) == 2) %>% ungroup()
+w0 <- fit_mm(FX, both, "B"); w1 <- fit_mm(paste(FX, "+ can"), both, "B")
+key("within_can_n", nrow(both)); key("within_can_pubs", n_distinct(both$DOI))
+key("within_can_effect", fixef(w1)["canYes"]); key("within_can_se", summary(w1)$coefficients["canYes", "Std. Error"]); key("within_can_p", lrt(w0, w1)["p"])
+cat(sprintf("Publications with both statuses: %d (%d records); tumour vs non-tumour %.1f pp (SE %.1f), LRT p = %.2f\n",
+            n_distinct(both$DOI), nrow(both), fixef(w1)["canYes"], summary(w1)$coefficients["canYes", "Std. Error"], lrt(w0, w1)["p"]))
+save_key_numbers()
+```
+
+### 4.3.3 Organ of origin (Table S7)
+
+Organs with at least 30 records with a mass concentration; reference = lung.
+
+```{r organ-viability-mixed, message=FALSE, warning=FALSE}
+org_df <- mm_dat %>% filter(!is.na(org)) %>% group_by(org) %>% filter(n() >= 30) %>% ungroup() %>% mutate(org = relevel(factor(org), ref = "lung"))
+org_info <- org_df %>% group_by(org) %>% summarise(records = n(), cell_lines = n_distinct(Cell), publications = n_distinct(DOI), .groups = "drop")
+cat(sprintf("Organs with >= 30 records: %d (N = %d)\n", nlevels(org_df$org), nrow(org_df)))
+key("org_n_organs", nlevels(org_df$org)); key("org_N", nrow(org_df))
+slopes_all <- list()
+for (s in names(RE)) {
+  o0 <- fit_mm(FX, org_df, s); o1 <- fit_mm(paste(FX, "+ org"), org_df, s); o2 <- fit_mm(paste(FX, "+ org + lcc:org"), org_df, s)
+  r1 <- lrt(o0, o1); r2 <- lrt(o1, o2)
+  add_test("organ", "organ | dose", s, r1); add_test("organ", "dose x organ", s, r2)
+  pre <- PRE[[s]]
+  key(paste0(pre, "org_dose"), fixef(o1)["lcc"])
+  key(paste0(pre, "org_main_chi2"), r1["chi2"]); key(paste0(pre, "org_main_df"), r1["df"]); key(paste0(pre, "org_main_p"), r1["p"])
+  key(paste0(pre, "org_int_chi2"), r2["chi2"]); key(paste0(pre, "org_int_df"), r2["df"]); key(paste0(pre, "org_int_p"), r2["p"])
+  sl <- level_slopes(o2, "org", levels(org_df$org)) %>% mutate(spec = s)
+  for (i in seq_len(nrow(sl))) key(paste0(pre, "slope_", sl$level[i]), sl$slope[i])
+  slopes_all[[s]] <- sl
+  if (s == "B") {
+    k1 <- kr(paste(FX, "+ org"), FX, org_df); k2 <- kr(paste(FX, "+ org + lcc:org"), paste(FX, "+ org"), org_df)
+    add_test("organ", "organ | dose (Kenward-Roger)", s, k1); add_test("organ", "dose x organ (Kenward-Roger)", s, k2)
+    key("org_main_kr_p", k1["p"]); key("org_int_kr_p", k2["p"])
+    print(VarCorr(o2), comp = "Std.Dev.")
+  }
+}
+slopes_tab <- bind_rows(slopes_all) %>% left_join(org_info, by = c("level" = "org")) %>% arrange(spec, slope)
+write.csv(slopes_tab, out("tables", "Table_S7_organ_dose_slopes.csv"), row.names = FALSE)
+print(as_tibble(slopes_tab) %>% filter(spec %in% c("B", "A")) %>% mutate(across(c(slope, ci_low, ci_high), ~ round(.x, 1))) %>%
+        select(spec, level, slope, ci_low, ci_high, records, cell_lines, publications), n = Inf)
+save_key_numbers()
+```
+
+### 4.3.4 Sensitivity: the primary specification without exposure time (N)
+
+```{r notime, message=FALSE, warning=FALSE}
+nt <- function(analysis, test, f0, f1, data, keyname) { r <- lrt(fit_mm(f0, data, "B"), fit_mm(f1, data, "B")); add_test(analysis, test, "N", r); key(keyname, r["p"]) }
+nt("species", "species | dose", "lcc", "lcc + sp", sp_df, "notime_sp_lrt_p")
+nt("tumour status", "cancer | dose", "lcc", "lcc + can", can_df, "notime_cancer_main_p"); nt("tumour status", "dose x cancer", "lcc + can", "lcc + can + lcc:can", can_df, "notime_int_p")
+nt("organ", "organ | dose", "lcc", "lcc + org", org_df, "notime_org_main_p"); nt("organ", "dose x organ", "lcc + org", "lcc + org + lcc:org", org_df, "notime_org_int_p")
+save_key_numbers()
+```
+
+### 4.3.5 Summary of the tests
+
+```{r mixed-summary}
+tests <- bind_rows(TESTS) %>% mutate(spec_label = SPEC_LABEL[spec])
+write.csv(tests, out("tables", "mixed_model_tests.csv"), row.names = FALSE)
+print(as_tibble(tests) %>% mutate(stat = round(stat, 2), ddf = round(ddf, 1), p = signif(p, 3)) %>% select(analysis, test, spec, stat, df, ddf, p), n = Inf)
+```
+
+### 4.3.6 The primary models of species and tumour status (Table S7.1)
+
+Table S7.1: every fixed effect of the species and tumour-status models (specification B, ML) with its Wald 95% confidence interval
+
+```{r mixed-tables, message=FALSE, warning=FALSE}
+z <- qnorm(0.975)
+r2_mm <- function(m) {
+  X <- getME(m, "X"); vf <- var(as.vector(X %*% fixef(m)))
+  vc <- as.data.frame(VarCorr(m)); vc <- vc[vc$grp != "Residual", ]
+  vr <- sum(vc$vcov * ifelse(vc$var1 == "lcc", mean(X[, "lcc"]^2), 1)); ve <- sigma(m)^2
+  c(marginal = vf / (vf + vr + ve), conditional = (vf + vr) / (vf + vr + ve))
+}
+label_term <- function(t) case_when(t == "(Intercept)" ~ "intercept", t == "lcc" ~ "log10 concentration, per decade",
+                                    t == "lt" ~ "log10 exposure time, per decade", t == "canYes" ~ "tumour vs non-tumour cell line",
+                                    t == "lcc:canYes" ~ "dose slope, tumour minus non-tumour", grepl("^sp", t) ~ paste(sub("^sp", "", t), "vs human"),
+                                    TRUE ~ t)
+fixed_rows <- function(n, m, terms = rownames(summary(m)$coefficients)) {
+  co <- summary(m)$coefficients[terms, , drop = FALSE]; vc <- as.data.frame(VarCorr(m))
+  sd_of <- function(grp, t) {
+    if (!t %in% c("(Intercept)", "lcc")) return(NA)
+    v <- vc$sdcor[sub("\\.\\d+$", "", vc$grp) == grp & vc$var1 == t]
+    if (length(v)) v[1] else NA
+  }
+  data.frame(model = n, parameter = label_term(rownames(co)), beta = co[, "Estimate"], se = co[, "Std. Error"],
+             ci_low = co[, "Estimate"] - z * co[, "Std. Error"], ci_high = co[, "Estimate"] + z * co[, "Std. Error"],
+             sd_publication = sapply(rownames(co), sd_of, grp = "DOI"), sd_nanomaterial = sapply(rownames(co), sd_of, grp = "Material"),
+             sd_cell_line = sapply(rownames(co), sd_of, grp = "Cell"), row.names = NULL)
+}
+m_sp <- fit_mm(paste(FX, "+ sp"), sp_df, "B"); m_can <- fit_mm(paste(FX, "+ can"), can_df, "B")
+m_int <- fit_mm(paste(FX, "+ can + lcc:can"), can_df, "B")
+est <- bind_rows(fixed_rows("species", m_sp), fixed_rows("tumour status", m_can), fixed_rows("tumour status", m_int, "lcc:canYes"))
+info <- bind_rows(lapply(list("species" = m_sp, "tumour status" = m_can), function(m) {
+  g <- ngrps(m); r2 <- r2_mm(m)
+  data.frame(records = nobs(m), publications = g[["DOI"]], nanomaterials = g[["Material"]], cell_lines = g[["Cell"]], residual_sd = sigma(m),
+             r2_marginal = r2[["marginal"]], r2_conditional = r2[["conditional"]], singular = as.integer(isSingular(m)))
+}), .id = "model")
+write.csv(est, out("tables", "Table_S7_1_mixed_model_estimates.csv"), row.names = FALSE)
+write.csv(info, out("tables", "Table_S7_1_mixed_model_info.csv"), row.names = FALSE)
+print(as_tibble(est) %>% mutate(across(where(is.numeric), ~ round(.x, 2))), n = Inf)
+print(as_tibble(info) %>% mutate(across(where(is.numeric), ~ round(.x, 3))))
+```
