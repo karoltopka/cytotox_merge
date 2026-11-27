@@ -4,7 +4,7 @@ output: html_document
 ---
 
 PCA and t-SNE of five numerical variables (dry diameter, zeta potential in water, mass concentration, exposure time, viability) on the
-complete cases, without imputation (Figure 2), on the unique five-variable profiles (Figure S1), and the t-SNE sensitivity to perplexity
+complete cases, without imputation (Figure 1), on the unique five-variable profiles (Figure S1), and the t-SNE sensitivity to perplexity
 and seed (Figure S2). 
 
 - PCA (`prcomp`) on centred and scaled variables; the biplot arrows are the correlations of the variables with the components x 4. The
@@ -106,7 +106,7 @@ cat("Final KL divergence:", round(tail(tsne_result$itercosts, 1), 3), "\n")
 save_key_numbers()
 ```
 
-### 3.3 Figure 2 – PCA biplot and t-SNE
+### 3.3 Figure 1 – PCA biplot and t-SNE
 
 ```{r fig.width=16, fig.height=9}
 dataset_cols <- c("Gul et al." = "#5B2A86", "Nanopharos" = "#008E9B", "Labouta et al." = "#D95F02")
@@ -184,9 +184,9 @@ write.csv(data.frame(PC1 = pca_result$x[, 1], PC2 = pca_result$x[, 2], dataset =
           out("tables", "pca_coordinates.csv"), row.names = FALSE)
 write.csv(data.frame(Dim1 = tsne_result$Y[, 1], Dim2 = tsne_result$Y[, 2], dataset = pretty_ds(ds), material = final_data$Material[pca_keep_idx]),
           out("tables", "tsne_coordinates.csv"), row.names = FALSE)
-fig2 <- two_panels(pca_panel(pca_result, ds), tsne_panel(tsne_result, ds), out("figures", "Figure_2_PCA_tSNE.png"))
-invisible(two_panels(pca_panel(pca_result, ds), tsne_panel(tsne_result, ds), out("figures", "Figure_2_PCA_tSNE_legend.png"), legend = TRUE))   # variant with a plain legend
-print(fig2)
+fig1 <- two_panels(pca_panel(pca_result, ds), tsne_panel(tsne_result, ds), out("figures", "Figure_1_PCA_tSNE.png"))
+invisible(two_panels(pca_panel(pca_result, ds), tsne_panel(tsne_result, ds), out("figures", "Figure_1_PCA_tSNE_legend.png"), legend = TRUE))   # variant with a plain legend
+print(fig1)
 ```
 
 ### 3.4 Figures S1 and S2
